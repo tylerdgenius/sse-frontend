@@ -1,103 +1,290 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useRef, useState } from "react";
+
+// React SSE Client Component
+// - TypeScript-ready (drop types if you prefer plain JS)
+// - Uses EventSource to connect to /sse
+// - Supports a short-lived token via query param (e.g. ?t=JWT)
+// - Shows connection state, received events, and allows manual POST to /broadcast
+// - Tailwind classes used for quick styling
+
+export default function SseClient({
+  url = "/sse",
+  token = "",
+  reconnectOnError = true,
+}: {
+  url?: string;
+  token?: string;
+  reconnectOnError?: boolean;
+}) {
+  const [connected, setConnected] = useState(false);
+  const [statusText, setStatusText] = useState("idle");
+  const [messages, setMessages] = useState<
+    Array<{ id?: string; event?: string; data: any; raw?: string }>
+  >([]);
+  const [manualPayload, setManualPayload] = useState(
+    '{ "msg": "hello from client" }'
+  );
+  const [autoConnect, setAutoConnect] = useState(true);
+  const [attempts, setAttempts] = useState(0);
+
+  const esRef = useRef<EventSource | null>(null);
+  const attemptsRef = useRef(0);
+
+  const buildUrl = () => {
+    // Use token in query string so EventSource can reconnect automatically.
+    const u = new URL(url, window.location.origin);
+    if (token) u.searchParams.set("t", token);
+    // include a client id to help server logs (optional)
+    u.searchParams.set("clientId", String(Math.floor(Math.random() * 1000000)));
+    return u.toString();
+  };
+
+  const fullUrl = "http://localhost:3001";
+
+  useEffect(() => {
+    // automatically connect on mount if autoConnect true
+    if (!autoConnect) return;
+    connect();
+    return () => {
+      cleanup();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, url]);
+
+  function pushMessage(msg: {
+    id?: string;
+    event?: string;
+    data: any;
+    raw?: string;
+  }) {
+    setMessages((m) => [msg, ...m].slice(0, 200)); // keep recent 200
+  }
+
+  function connect() {
+    cleanup();
+    // const fullUrl = buildUrl();
+    setStatusText("connecting...");
+    const url = `${fullUrl}/sse`;
+
+    try {
+      const es = new EventSource(url, { withCredentials: false });
+      esRef.current = es;
+
+      es.onopen = () => {
+        attemptsRef.current = 0;
+        setAttempts(0);
+        setConnected(true);
+        setStatusText("open");
+        pushMessage({ event: "__meta", data: `connected to ${fullUrl}` });
+      };
+
+      es.onerror = (err) => {
+        setConnected(false);
+        setStatusText("error");
+        attemptsRef.current += 1;
+        setAttempts(attemptsRef.current);
+        pushMessage({
+          event: "__meta",
+          data: `error (attempt ${attemptsRef.current})`,
+        });
+
+        // If EventSource is closed permanently by server, try manual reconnect if enabled
+        if (reconnectOnError) {
+          // Exponential backoff capped at 30s
+          const backoff = Math.min(
+            30000,
+            1000 * Math.pow(2, Math.min(6, attemptsRef.current))
+          );
+          setStatusText(`retrying in ${Math.round(backoff / 1000)}s`);
+          setTimeout(() => {
+            // If still no ref (or closed), re-create
+            if (
+              !esRef.current ||
+              esRef.current.readyState === EventSource.CLOSED
+            ) {
+              connect();
+            }
+          }, backoff);
+        }
+      };
+
+      es.onmessage = (e) => {
+        // default message
+        let data = e.data;
+        try {
+          data = JSON.parse(e.data);
+        } catch (e) {
+          // keep as string
+        }
+        pushMessage({
+          id: (e as any).lastEventId,
+          event: "message",
+          data,
+          raw: e.data,
+        });
+      };
+
+      // example: listen to custom event 'tick'
+      es.addEventListener("tick", (e: Event) => {
+        // @ts-ignore
+        const d = (e as MessageEvent).data;
+        let parsed = d;
+        try {
+          parsed = JSON.parse(d);
+        } catch {}
+        pushMessage({ event: "tick", data: parsed, raw: d });
+      });
+
+      // custom handler for server-sent comments (heartbeat) — browsers don't surface comments
+      // so server can instead send an event like `event: heartbeat`.
+      es.addEventListener("heartbeat", (e: Event) => {
+        // @ts-ignore
+        pushMessage({ event: "heartbeat", data: (e as MessageEvent).data });
+      });
+    } catch (err) {
+      setStatusText("failed to create EventSource");
+      pushMessage({ event: "__meta", data: String(err) });
+    }
+  }
+
+  function cleanup() {
+    const es = esRef.current;
+    if (es) {
+      try {
+        es.close();
+      } catch {}
+      esRef.current = null;
+    }
+    setConnected(false);
+    setStatusText("closed");
+  }
+
+  async function sendManual() {
+    try {
+      const body = JSON.parse(manualPayload);
+      const res = await fetch(`${fullUrl}/broadcast`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      pushMessage({ event: "manual-send-result", data: json });
+    } catch (err) {
+      pushMessage({ event: "manual-send-error", data: String(err) });
+    }
+  }
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="max-w-3xl mx-auto p-4">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-xl font-semibold">SSE Client</h2>
+        <div className="text-sm">
+          <span
+            className={`px-2 py-1 rounded text-white ${
+              connected ? "bg-green-600" : "bg-gray-500"
+            }`}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            {connected ? "connected" : "disconnected"}
+          </span>
+          <span className="ml-3 text-xs text-gray-600">{statusText}</span>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        <div className="col-span-2">
+          <label className="block text-sm mb-1">SSE URL</label>
+          <input className="w-full p-2 border rounded" value={url} readOnly />
+        </div>
+
+        <div>
+          <label className="block text-sm mb-1">Token (query)</label>
+          <input className="w-full p-2 border rounded" value={token} readOnly />
+        </div>
+      </div>
+
+      <div className="flex gap-2 mb-4">
+        <button
+          className="px-3 py-1 bg-blue-600 text-white rounded"
+          onClick={() => connect()}
         >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+          Connect
+        </button>
+        <button
+          className="px-3 py-1 bg-red-600 text-white rounded"
+          onClick={() => cleanup()}
         >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          Disconnect
+        </button>
+        <label className="ml-2 flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={autoConnect}
+            onChange={(e) => setAutoConnect(e.target.checked)}
+          />{" "}
+          Auto-connect
+        </label>
+        <div className="ml-auto text-xs text-gray-600">
+          Reconnect attempts: {attempts}
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <label className="block text-sm mb-1">Manual broadcast payload</label>
+        <textarea
+          className="w-full p-2 border rounded h-24"
+          value={manualPayload}
+          onChange={(e) => setManualPayload(e.target.value)}
+        />
+        <div className="flex gap-2 mt-2">
+          <button
+            className="px-3 py-1 bg-green-600 text-white rounded"
+            onClick={sendManual}
+          >
+            Send
+          </button>
+          <button
+            className="px-3 py-1 bg-gray-200 rounded"
+            onClick={() => setManualPayload('{ "msg": "hello from client" }')}
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="font-medium mb-2">Events</h3>
+        <div className="bg-white border rounded shadow-inner p-2 max-h-96 overflow-auto">
+          {messages.length === 0 && (
+            <div className="text-sm text-gray-500">No events yet</div>
+          )}
+          {messages.map((m, i) => (
+            <div key={i} className="mb-2 p-2 border-b last:border-b-0">
+              <div className="text-xs text-gray-500">
+                {m.event ?? "message"} {m.id ? `• id:${m.id}` : ""}
+              </div>
+              <pre className="text-sm whitespace-pre-wrap">
+                {typeof m.data === "string"
+                  ? m.data
+                  : JSON.stringify(m.data, null, 2)}
+              </pre>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
+
+/*
+  Server expectations (minimal):
+  - GET /sse should return `Content-Type: text/event-stream` and stream events.
+  - POST /broadcast accepts JSON and broadcasts to connected SSE clients.
+
+  Notes & tips:
+  - If you need Authorization headers for SSE, browsers don't let you set custom headers on EventSource.
+    Use a short-lived token in the querystring, or perform an authenticated handshake before opening the EventSource.
+  - For cluster/broadcast support, run a Redis pub/sub on the server side and publish events to a channel all Node instances subscribe to.
+  - Ensure proxies (nginx, Cloudflare) have buffering disabled for the SSE endpoint.
+*/
