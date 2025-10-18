@@ -144,6 +144,23 @@ export default function SseClient({
         // @ts-ignore
         pushMessage({ event: "heartbeat", data: (e as MessageEvent).data });
       });
+
+      // custom handler for update events
+      es.addEventListener("update", (e: Event) => {
+        const messageEvent = e as MessageEvent;
+        let data = messageEvent.data;
+        try {
+          data = JSON.parse(messageEvent.data);
+        } catch (err) {
+          // keep as string if parsing fails
+        }
+        pushMessage({ 
+          event: "update", 
+          data, 
+          raw: messageEvent.data,
+          id: messageEvent.lastEventId 
+        });
+      });
     } catch (err) {
       setStatusText("failed to create EventSource");
       pushMessage({ event: "__meta", data: String(err) });
