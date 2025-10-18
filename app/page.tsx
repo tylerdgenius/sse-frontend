@@ -111,6 +111,7 @@ export default function SseClient({
       };
 
       es.onmessage = (e) => {
+        console.log("SSE message", e);
         // default message
         let data = e.data;
         try {
